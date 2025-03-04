@@ -32,11 +32,14 @@ class _FileExplorerState extends State<FileExplorer> {
   bool isGridView = false;
   String sortBy = 'name';
   FileSystemEntity? selectedItem;
+  List<Directory> quickAccessDirs = [];
+  List<Directory> thisPCDirs = [];
 
   @override
   void initState() {
     super.initState();
     _initDirectory();
+    _loadSidebarItems();
   }
 
   Future<void> _initDirectory() async {
@@ -45,6 +48,30 @@ class _FileExplorerState extends State<FileExplorer> {
       currentDirectory = directory;
       currentPath = directory.path;
       _listFiles();
+    });
+  }
+
+  Future<void> _loadSidebarItems() async {
+    final List<Directory> quickAccess = [];
+    final List<Directory> thisPC = [];
+
+    // Quick Access
+    final downloadsDir = await getDownloadsDirectory();
+    if (downloadsDir != null) quickAccess.add(downloadsDir);
+
+    final documentsDir = await getApplicationDocumentsDirectory();
+    quickAccess.add(documentsDir);
+
+    final picturesDir = Directory('/storage/emulated/0/Pictures');
+    if (await picturesDir.exists()) quickAccess.add(picturesDir);
+
+    // This PC
+    final rootDir = Directory('/');
+    thisPC.add(rootDir);
+
+    setState(() {
+      quickAccessDirs = quickAccess;
+      thisPCDirs = thisPC;
     });
   }
 
@@ -68,93 +95,46 @@ class _FileExplorerState extends State<FileExplorer> {
     });
   }
 
-  void _navigateBack() async {
-    if (currentDirectory!.parent.path != currentDirectory!.path) {
-      _navigateTo(currentDirectory!.parent);
-    }
-  }
-
-  Widget _buildFileItem(FileSystemEntity file) {
-    final isSelected = selectedItem == file;
-    final stat = file.statSync();
-    final isDirectory = stat.type == FileSystemEntityType.directory;
-    final icon = isDirectory ? Icons.folder : Icons.insert_drive_file;
-    final color = isSelected ? Colors.blue.shade100 : Colors.transparent;
-
+  Widget _buildSidebarItem(String title, IconData icon, Directory directory) {
     return ListTile(
-      leading: Icon(icon, color: isDirectory ? Colors.blue : Colors.grey),
-      title: Text(file.path.split('/').last),
-      subtitle: Text(
-        isDirectory
-            ? 'Directory'
-            : '${(stat.size / 1024).toStringAsFixed(2)} KB',
-      ),
-      trailing: Text(stat.modified.toString().split(' ')[0]),
-      onTap: () {
-        if (isDirectory) {
-          _navigateTo(Directory(file.path));
-        } else {
-          setState(() => selectedItem = file);
-        }
-      },
-      onLongPress: () => _showContextMenu(file),
-      tileColor: color,
+      leading: Icon(icon, size: 20),
+      title: Text(title),
+      dense: true,
+      onTap: () => _navigateTo(directory),
     );
   }
 
-  Widget _buildGridViewItem(FileSystemEntity file) {
-    final isDirectory = file.statSync().type == FileSystemEntityType.directory;
-
-    return GridTile(
-      child: InkWell(
-        onTap: () => isDirectory ? _navigateTo(Directory(file.path)) : null,
-        onLongPress: () => _showContextMenu(file),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              isDirectory ? Icons.folder : Icons.insert_drive_file,
-              size: 50,
-              color: isDirectory ? Colors.blue : Colors.grey,
+  Widget _buildSidebarSection(String title, List<Directory> directories) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text(
+            title,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.blue.shade800,
             ),
-            Text(file.path.split('/').last),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showContextMenu(FileSystemEntity file) {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: Text(file.path.split('/').last),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Type: ${file.statSync().type}'),
-                Text('Size: ${file.statSync().size} bytes'),
-                Text('Modified: ${file.statSync().modified}'),
-              ],
-            ),
-            actions: [
-              TextButton(
-                child: Text('Delete'),
-                onPressed: () {
-                  file.deleteSync();
-                  _listFiles();
-                  Navigator.pop(context);
-                },
-              ),
-              TextButton(
-                child: Text('Close'),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ],
           ),
+        ),
+        ...directories.map(
+          (dir) => _buildSidebarItem(
+            dir.path.split('/').last,
+            _getFolderIcon(dir.path),
+            dir,
+          ),
+        ),
+      ],
     );
+  }
+
+  IconData _getFolderIcon(String path) {
+    final lowerPath = path.toLowerCase();
+    if (lowerPath.contains('download')) return Icons.download;
+    if (lowerPath.contains('picture')) return Icons.image;
+    if (lowerPath.contains('document')) return Icons.description;
+    return Icons.folder;
   }
 
   @override
@@ -162,10 +142,6 @@ class _FileExplorerState extends State<FileExplorer> {
     return Scaffold(
       appBar: AppBar(
         title: Text(currentPath),
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back),
-          onPressed: _navigateBack,
-        ),
         actions: [
           IconButton(
             icon: Icon(isGridView ? Icons.list : Icons.grid_view),
@@ -185,61 +161,90 @@ class _FileExplorerState extends State<FileExplorer> {
           ),
         ],
       ),
-      body:
-          currentDirectory == null
-              ? Center(child: CircularProgressIndicator())
-              : isGridView
-              ? GridView.builder(
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  childAspectRatio: 1,
-                ),
-                itemCount: files.length,
-                itemBuilder:
-                    (context, index) => _buildGridViewItem(files[index]),
-              )
-              : ListView.builder(
-                itemCount: files.length,
-                itemBuilder: (context, index) => _buildFileItem(files[index]),
-              ),
-      floatingActionButton: FloatingActionButton(
-        child: Icon(Icons.create_new_folder),
-        onPressed: () async {
-          final newDir =
-              await Directory('${currentDirectory!.path}/New Folder').create();
-          _listFiles();
-        },
+      body: Row(
+        children: [
+          // Sidebar
+          Container(
+            width: 250,
+            color: Colors.grey.shade100,
+            child: ListView(
+              children: [
+                _buildSidebarSection('Quick Access', quickAccessDirs),
+                Divider(height: 1),
+                _buildSidebarSection('This PC', thisPCDirs),
+              ],
+            ),
+          ),
+          VerticalDivider(width: 1),
+          // Main Content
+          Expanded(
+            child:
+                currentDirectory == null
+                    ? Center(child: CircularProgressIndicator())
+                    : isGridView
+                    ? GridView.builder(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        childAspectRatio: 1,
+                      ),
+                      itemCount: files.length,
+                      itemBuilder:
+                          (context, index) => _buildGridViewItem(files[index]),
+                    )
+                    : ListView.builder(
+                      itemCount: files.length,
+                      itemBuilder:
+                          (context, index) => _buildFileItem(files[index]),
+                    ),
+          ),
+        ],
       ),
-      drawer: Drawer(
-        child: ListView(
+    );
+  }
+
+  Widget _buildGridViewItem(FileSystemEntity entity) {
+    return GestureDetector(
+      onTap: () {
+        if (entity is Directory) {
+          _navigateTo(entity);
+        } else {
+          // Handle file tap
+        }
+      },
+      child: Card(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            DrawerHeader(
-              child: Text(
-                'Quick Access',
-                style: TextStyle(color: Colors.white),
-              ),
-              decoration: BoxDecoration(color: Colors.blue),
+            Icon(
+              entity is Directory ? Icons.folder : Icons.insert_drive_file,
+              size: 50,
             ),
-            ListTile(
-              leading: Icon(Icons.home),
-              title: Text('Home'),
-              onTap: () => _navigateTo(Directory(currentPath)),
-            ),
-            ListTile(
-              leading: Icon(Icons.folder),
-              title: Text('Documents'),
-              onTap:
-                  () => _navigateTo(Directory('/storage/emulated/0/Documents')),
-            ),
-            ListTile(
-              leading: Icon(Icons.download),
-              title: Text('Downloads'),
-              onTap:
-                  () => _navigateTo(Directory('/storage/emulated/0/Download')),
+            Text(
+              entity.path.split('/').last,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildFileItem(FileSystemEntity entity) {
+    return ListTile(
+      leading: Icon(
+        entity is Directory ? Icons.folder : Icons.insert_drive_file,
+      ),
+      title: Text(entity.path.split('/').last),
+      onTap: () {
+        if (entity is Directory) {
+          _navigateTo(entity);
+        } else {
+          // Handle file tap
+        }
+      },
+    );
+  }
+
+  // Mantenha os métodos restantes (_buildFileItem, _buildGridViewItem, etc) do código anterior
 }
